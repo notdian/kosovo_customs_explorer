@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CustomsDataService } from '@/lib/database';
 import './App.css';
-import tarrifData from '@/data/tarrifs.json' with { type: 'json' };
 /* global __BUILD_TIME__ */
 import {
     flexRender,
@@ -211,7 +210,7 @@ function App() {
     useEffect(() => {
         (async () => {
             try {
-                await CustomsDataService.initializeData(tarrifData, { force: false });
+                await CustomsDataService.initializeData({ force: false });
                 const all = await CustomsDataService.getAllData();
                 setTreeData(CustomsDataService.buildTreeFromList(all));
             } catch (e) {

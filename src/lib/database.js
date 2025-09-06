@@ -107,7 +107,7 @@ function buildParentsIndex(customsList) {
 }
 /* ----------------------- service ----------------------- */
 export class CustomsDataService {
-    static async initializeData(data, { force = false } = {}) {
+    static async initializeData({ force = false } = {}) {
         try {
             const existing = await db.customs.count();
             if (!force && existing > 0) {
@@ -115,6 +115,7 @@ export class CustomsDataService {
                 if (parentsCount === 0) await this.rebuildParentsIndex();
                 return false;
             }
+            const data = import('@/data/tarrifs.json', { type: 'json' });
             const normalized = data.map((d) => ({
                 ...d,
                 codeLC: normalizeLC(d.code),
