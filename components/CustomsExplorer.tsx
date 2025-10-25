@@ -167,7 +167,7 @@ export function CustomsExplorer() {
         <CardContent className="grid gap-4 md:grid-cols-4">
           <div className="space-y-2">
             <Label htmlFor={idPrefixInputId} className="text-sm text-muted-foreground">
-              Prefiksi i Kodit / ID-së
+              Prefiksi i Kodit
             </Label>
             <Input
               id={idPrefixInputId}

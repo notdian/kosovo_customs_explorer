@@ -1,9 +1,7 @@
 import Dexie, { Table } from "dexie";
-import { Charset, Encoder, Document as FlexSearchDocument } from "flexsearch";
+import { Encoder, Document as FlexSearchDocument } from "flexsearch";
 
 export interface CustomsRecord {
-  id: number;
-  parentId: number | null;
   code: string;
   description: string;
   percentage: number;
@@ -14,11 +12,15 @@ export interface CustomsRecord {
   excise: number;
   validFrom: string;
   uomCode: string | null;
-  fileUrl: string | null;
-  importMeasure: string | null;
-  exportMeasure: string | null;
-  rootId?: number | null;
+
+  // computed / optional runtime fields
+  rootCode?: string | null;
   highlightedDescription?: string | null;
+
+  // tolerated extras if present in source (ignored)
+  fileUrl?: string | null;
+  importMeasure?: string | null;
+  exportMeasure?: string | null;
 }
 
 export type CustomsFlatRow = CustomsRecord;
@@ -55,6 +57,7 @@ const FLEXSEARCH_HIGHLIGHT_TEMPLATE =
   '<span class="bg-amber-200 rounded px-0.5">$1</span>';
 const INDEX_CHUNK_SIZE = 2_000;
 
+/** sort helper */
 function sortChildren(a: CustomsTreeNode, b: CustomsTreeNode): number {
   const ac = (a.code ?? "").toString();
   const bc = (b.code ?? "").toString();
@@ -64,60 +67,75 @@ function sortChildren(a: CustomsTreeNode, b: CustomsTreeNode): number {
   const bd = (b.description ?? "").toString();
   if (ad < bd) return -1;
   if (ad > bd) return 1;
-  return (a.id ?? 0) - (b.id ?? 0);
+  return 0;
+}
+
+function findParentCode(code: string, codeSet: Set<string>): string | null {
+  // longest proper prefix that exists in the dataset
+  for (let i = code.length - 1; i > 0; i--) {
+    const cand = code.slice(0, i);
+    if (codeSet.has(cand)) return cand;
+  }
+  return null;
 }
 
 function buildCachedData(rows: CustomsRecord[]): {
   cache: CustomsFlatRow[];
-  byId: Map<number, CustomsFlatRow>;
-  byRootId: Map<number, CustomsFlatRow[]>;
-  rootOrder: number[];
+  byCode: Map<string, CustomsFlatRow>;
+  byRootCode: Map<string, CustomsFlatRow[]>;
+  rootOrder: string[];
 } {
-  const cloned: CustomsFlatRow[] = rows.map((row) => ({ ...row }));
-  const byId = new Map<number, CustomsFlatRow>(
-    cloned.map((row) => [row.id, row]),
-  );
-  const rootCache = new Map<number, number | null>();
-  const byRootId = new Map<number, CustomsFlatRow[]>();
-  const rootOrder: number[] = [];
+  // stable order by code for deterministic roots
+  const cloned: CustomsFlatRow[] = rows
+    .map((row) => ({ ...row }))
+    .sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
 
-  const findRootId = (row: CustomsFlatRow | undefined): number | null => {
-    if (!row) return null;
-    const cached = rootCache.get(row.id);
-    if (cached !== undefined) return cached;
-    if (!row.parentId) {
-      rootCache.set(row.id, row.id);
-      return row.id;
+  const byCode = new Map<string, CustomsFlatRow>(
+    cloned.map((row) => [row.code, row]),
+  );
+
+  const codeSet = new Set<string>(cloned.map((r) => r.code));
+  const byRootCode = new Map<string, CustomsFlatRow[]>();
+  const rootOrder: string[] = [];
+
+  // compute root for each row (walk prefixes until no parent)
+  const rootCache = new Map<string, string | null>();
+  const findRoot = (code: string): string => {
+    if (rootCache.has(code)) return rootCache.get(code)!;
+    let curr: string | null = findParentCode(code, codeSet);
+    let last = code;
+    while (curr) {
+      last = curr;
+      curr = findParentCode(curr, codeSet);
     }
-    const parent = byId.get(row.parentId);
-    const rootId = findRootId(parent) ?? row.parentId;
-    rootCache.set(row.id, rootId);
-    return rootId;
+    rootCache.set(code, last);
+    return last;
   };
 
   for (const row of cloned) {
-    row.rootId = findRootId(row) ?? row.id;
-    const rootId = row.rootId ?? row.id;
-    let bucket = byRootId.get(rootId);
+    const root = findRoot(row.code);
+    row.rootCode = root;
+
+    let bucket = byRootCode.get(root);
     if (!bucket) {
       bucket = [];
-      byRootId.set(rootId, bucket);
-      rootOrder.push(rootId);
+      byRootCode.set(root, bucket);
+      rootOrder.push(root);
     }
     bucket.push(row);
   }
 
-  return { cache: cloned, byId, byRootId, rootOrder };
+  return { cache: cloned, byCode, byRootCode, rootOrder };
 }
 
 export class CustomsDatabase extends Dexie {
-  public customs!: Table<CustomsRecord, number>;
+  public customs!: Table<CustomsRecord, string>;
 
   constructor() {
-    super("CustomsDatabaseV2");
+    super("CustomsDatabaseCodesV1");
     this.version(1).stores({
       customs:
-        "++id, code, parentId, description, percentage, cefta, msa, trmtl, tvsh, excise, validFrom, uomCode",
+        "code, description, percentage, cefta, msa, trmtl, tvsh, excise, validFrom, uomCode",
     });
   }
 }
@@ -134,10 +152,10 @@ function getDb(): CustomsDatabase {
   return dbInstance;
 }
 
-type FlexDocHit = { id: number; highlight?: string | null };
+type FlexDocHit = { id: string; highlight?: string | null };
 
+/** tolerant extractor across flexsearch versions/shapes */
 function extractFlexDocHits(raw: unknown): FlexDocHit[] {
-  // Tolerant extractor across flexsearch versions/shapes
   const hits: FlexDocHit[] = [];
   const visit = (node: unknown) => {
     if (!node) return;
@@ -145,14 +163,14 @@ function extractFlexDocHits(raw: unknown): FlexDocHit[] {
       node.forEach(visit);
       return;
     }
-    if (typeof node === "number") {
-      hits.push({ id: node, highlight: null });
+    if (typeof node === "string" || typeof node === "number") {
+      hits.push({ id: String(node), highlight: null });
       return;
     }
     if (typeof node === "object") {
       const record = node as Record<string, unknown>;
       const rawId = record.id;
-      if (typeof rawId === "number") {
+      if (typeof rawId === "string" || typeof rawId === "number") {
         let highlight: string | null = null;
         if (typeof record.highlight === "string") {
           highlight = record.highlight;
@@ -166,21 +184,18 @@ function extractFlexDocHits(raw: unknown): FlexDocHit[] {
             highlight = (doc as { highlight: string }).highlight;
           }
         }
-        hits.push({ id: rawId, highlight });
+        hits.push({ id: String(rawId), highlight });
       }
       const result = record.result;
-      if (Array.isArray(result)) {
-        result.forEach(visit);
-      }
+      if (Array.isArray(result)) result.forEach(visit);
       const subHits = record.hits;
-      if (Array.isArray(subHits)) {
-        subHits.forEach(visit);
-      }
+      if (Array.isArray(subHits)) subHits.forEach(visit);
     }
   };
   visit(raw);
 
-  const dedup = new Map<number, string | null>();
+  // de-dup, prefer entries that carry highlight
+  const dedup = new Map<string, string | null>();
   for (const h of hits) {
     if (!dedup.has(h.id)) dedup.set(h.id, h.highlight ?? null);
     else if (!dedup.get(h.id) && h.highlight) dedup.set(h.id, h.highlight);
@@ -190,15 +205,16 @@ function extractFlexDocHits(raw: unknown): FlexDocHit[] {
 
 export class CustomsDataService {
   private static _allDataCache: CustomsFlatRow[] | null = null;
-  private static _allDataById: Map<number, CustomsFlatRow> | null = null;
-  private static _allDataByRootId: Map<number, CustomsFlatRow[]> | null = null;
-  private static _rootOrder: number[] | null = null;
+  private static _allDataByCode: Map<string, CustomsFlatRow> | null = null;
+  private static _allDataByRootCode: Map<string, CustomsFlatRow[]> | null =
+    null;
+  private static _rootOrder: string[] | null = null;
   private static _descriptionIndex: FlexSearchDocument | null = null;
 
   static resetCaches(): void {
     this._allDataCache = null;
-    this._allDataById = null;
-    this._allDataByRootId = null;
+    this._allDataByCode = null;
+    this._allDataByRootCode = null;
     this._rootOrder = null;
     this._descriptionIndex = null;
   }
@@ -207,11 +223,9 @@ export class CustomsDataService {
     force = false,
     onProgress,
   }: InitializeOptions = {}): Promise<boolean> {
-    if (typeof window === "undefined") {
-      return false;
-    }
+    if (typeof window === "undefined") return false;
 
-    const formatNumber = (value: number) => value.toLocaleString(undefined);
+    const formatNumber = (v: number) => v.toLocaleString(undefined);
 
     try {
       const db = getDb();
@@ -245,14 +259,23 @@ export class CustomsDataService {
         message: `Duke indeksuar 0 / ${formatNumber(total)} rreshta...`,
       });
 
+      // Normalize
       const normalized: CustomsRecord[] = data.map((d) => ({
-        ...d,
         code: d.code == null ? "" : String(d.code),
         description: d.description == null ? "" : String(d.description),
+        percentage: Number.isFinite(Number(d.percentage))
+          ? Number(d.percentage)
+          : 0,
+        cefta: Number.isFinite(Number(d.cefta)) ? Number(d.cefta) : 0,
+        msa: Number.isFinite(Number(d.msa)) ? Number(d.msa) : 0,
+        trmtl: Number.isFinite(Number(d.trmtl)) ? Number(d.trmtl) : 0,
+        tvsh: Number.isFinite(Number(d.tvsh)) ? Number(d.tvsh) : 0,
+        excise: Number.isFinite(Number(d.excise)) ? Number(d.excise) : 0,
+        validFrom: d.validFrom ?? "",
+        uomCode: (d.uomCode ?? null) as string | null,
+        fileUrl: d.fileUrl ?? null,
         importMeasure: d.importMeasure ?? null,
         exportMeasure: d.exportMeasure ?? null,
-        fileUrl: d.fileUrl ?? null,
-        validFrom: d.validFrom ?? "",
       }));
 
       await db.transaction("rw", db.customs, async () => {
@@ -301,17 +324,17 @@ export class CustomsDataService {
     try {
       const db = getDb();
       const rows = await db.customs.toArray();
-      const { cache, byId, byRootId, rootOrder } = buildCachedData(rows);
+      const { cache, byCode, byRootCode, rootOrder } = buildCachedData(rows);
       this._allDataCache = cache;
-      this._allDataById = byId;
-      this._allDataByRootId = byRootId;
+      this._allDataByCode = byCode;
+      this._allDataByRootCode = byRootCode;
       this._rootOrder = rootOrder;
       return this._allDataCache;
     } catch (error) {
       console.error("Error building data cache:", error);
       this._allDataCache = [];
-      this._allDataById = new Map();
-      this._allDataByRootId = new Map();
+      this._allDataByCode = new Map();
+      this._allDataByRootCode = new Map();
       this._rootOrder = [];
       return this._allDataCache;
     }
@@ -321,10 +344,16 @@ export class CustomsDataService {
     if (this._descriptionIndex) return this._descriptionIndex;
 
     const data = await this.ensureAllDataCache();
-    const encoder = new Encoder(Charset.Normalize);
+    const encoder = new Encoder({
+      include: {
+        letter: true,
+        number: false,
+        char: ["#", "@", "-"]
+      }
+    });
     const index = new FlexSearchDocument({
       document: {
-        id: "id" as const,
+        id: "code" as const,
         store: true,
         index: [
           {
@@ -337,7 +366,7 @@ export class CustomsDataService {
     });
     for (const row of data) {
       index.add({
-        id: row.id,
+        code: row.code,
         description: row.description,
       });
     }
@@ -356,30 +385,27 @@ export class CustomsDataService {
   }
 
   static buildTreeFromList(list: CustomsFlatRow[]) {
-    const byId = new Map<number, CustomsTreeNode>();
+    const byCode = new Map<string, CustomsTreeNode>();
+    const presentCodes = new Set(list.map((r) => r.code));
     const roots: CustomsTreeNode[] = [];
 
     for (const row of list) {
-      const node: CustomsTreeNode = { ...row, subRows: [] };
-      byId.set(node.id, node);
+      byCode.set(row.code, { ...row, subRows: [] });
     }
 
     for (const row of list) {
-      const node = byId.get(row.id);
-      if (!node) continue;
-      if (row.parentId == null || !byId.has(row.parentId)) {
-        roots.push(node);
+      const node = byCode.get(row.code)!;
+      const parentCode = findParentCode(row.code, presentCodes);
+      if (parentCode && byCode.has(parentCode)) {
+        byCode.get(parentCode)!.subRows.push(node);
       } else {
-        byId.get(row.parentId)?.subRows.push(node);
+        roots.push(node);
       }
     }
 
-    for (const node of byId.values()) {
-      if (node.subRows.length > 1) {
-        node.subRows.sort(sortChildren);
-      }
+    for (const node of byCode.values()) {
+      if (node.subRows.length > 1) node.subRows.sort(sortChildren);
     }
-
     roots.sort(sortChildren);
     return roots;
   }
@@ -393,9 +419,7 @@ export class CustomsDataService {
     descQuery = "",
     { parentLimit = 200, itemLimit = 4000 }: SearchOptions = {},
   ): Promise<CustomsFlatRow[]> {
-    if (typeof window === "undefined") {
-      return [];
-    }
+    if (typeof window === "undefined") return [];
 
     try {
       const codePrefix = (idPrefix ?? "").trim();
@@ -414,49 +438,47 @@ export class CustomsDataService {
         return [];
       }
 
-      const codeIds = hasCodeQuery
-        ? await this.searchByCodeIds(codePrefix, parentLimit)
+      const codeSet = hasCodeQuery
+        ? await this.searchByCodeCodes(codePrefix, parentLimit)
         : null;
 
       const descHits = hasDescQuery
         ? await this.searchByDescriptionHits(descQueryTrimmed, itemLimit)
         : null;
 
-      const highlightById = new Map<number, string>();
-
-      let descIds: Set<number> | null = null;
+      const highlightByCode = new Map<string, string>();
+      let descCodes: Set<string> | null = null;
 
       if (descHits) {
-        descIds = new Set();
+        descCodes = new Set();
         descHits.forEach((r) => {
-          descIds!.add(r.id as number);
-          if (r.highlight) highlightById.set(r.id as number, r.highlight);
+          descCodes!.add(r.id);
+          if (r.highlight) highlightByCode.set(r.id, r.highlight);
         });
       }
 
-      const finalIds = this.intersectIds(codeIds, descIds);
-      if (!finalIds.size) return [];
+      const finalCodes = this.intersectCodes(codeSet, descCodes);
+      if (!finalCodes.size) return [];
 
-      return this.buildSearchResults(finalIds, highlightById, itemLimit);
+      return this.buildSearchResults(finalCodes, highlightByCode, itemLimit);
     } catch (error) {
       console.error("Search failed:", { idPrefix, descQuery, error });
       return [];
     }
   }
 
-  private static async searchByCodeIds(
+  private static async searchByCodeCodes(
     codePrefix: string,
     parentLimit: number,
-  ): Promise<Set<number>> {
+  ): Promise<Set<string>> {
     const db = getDb();
-    // Grab primary keys of rows whose code starts with the prefix
-    const ids = await db.customs
+    // Primary keys (codes) that start with the prefix
+    const codes = await db.customs
       .where("code")
       .startsWith(codePrefix)
       .limit(parentLimit * this.CODE_SEARCH_MULTIPLIER)
       .primaryKeys();
-
-    return new Set(ids);
+    return new Set(codes as string[]);
   }
 
   private static async searchByDescriptionHits(
@@ -468,7 +490,6 @@ export class CustomsDataService {
     const searchLimit =
       Math.min(itemLimit * this.DESC_SEARCH_MULTIPLIER, dataLength) || undefined;
 
-    // Ask for enriched results to maximize compatibility with highlight plugins
     const raw = index.search(query, {
       limit: searchLimit,
       highlight: {
@@ -482,10 +503,10 @@ export class CustomsDataService {
     return extractFlexDocHits(raw);
   }
 
-  private static intersectIds(
-    a: Set<number> | null,
-    b: Set<number> | null,
-  ): Set<number> {
+  private static intersectCodes(
+    a: Set<string> | null,
+    b: Set<string> | null,
+  ): Set<string> {
     if (a && b) return new Set([...a].filter((id) => b.has(id)));
     if (a) return a;
     if (b) return b;
@@ -493,50 +514,39 @@ export class CustomsDataService {
   }
 
   private static buildSearchResults(
-    ids: Set<number>,
-    highlightById: Map<number, string>,
+    codes: Set<string>,
+    highlightByCode: Map<string, string>,
     itemLimit: number,
   ): CustomsFlatRow[] {
-    const byId = this._allDataById;
-    const byRootId = this._allDataByRootId;
+    const byCode = this._allDataByCode;
+    const byRootCode = this._allDataByRootCode;
     const rootOrder = this._rootOrder;
 
-    if (!byId || !byRootId || !rootOrder) {
-      return [];
-    }
+    if (!byCode || !byRootCode || !rootOrder) return [];
 
-    const matchedRootIds = new Set<number>();
-
-    for (const id of ids) {
-      const row = byId.get(id);
+    const matchedRootCodes = new Set<string>();
+    for (const code of codes) {
+      const row = byCode.get(code);
       if (!row) continue;
-      matchedRootIds.add(row.rootId ?? row.id);
+      matchedRootCodes.add(row.rootCode ?? row.code);
     }
-
-    if (!matchedRootIds.size) {
-      return [];
-    }
+    if (!matchedRootCodes.size) return [];
 
     const results: CustomsFlatRow[] = [];
+    for (const root of rootOrder) {
+      if (!matchedRootCodes.has(root)) continue;
+      const bucket = byRootCode.get(root);
+      if (!bucket) continue;
 
-    for (const rootId of rootOrder) {
-      if (!matchedRootIds.has(rootId)) continue;
-      const rowsForRoot = byRootId.get(rootId);
-      if (!rowsForRoot) continue;
-
-      for (const row of rowsForRoot) {
+      for (const row of bucket) {
         results.push({
           ...row,
           highlightedDescription:
-            highlightById.get(row.id) ?? row.highlightedDescription ?? null,
+            highlightByCode.get(row.code) ?? row.highlightedDescription ?? null,
         });
-
-        if (results.length >= itemLimit) {
-          return results;
-        }
+        if (results.length >= itemLimit) return results;
       }
     }
-
     return results;
   }
 }

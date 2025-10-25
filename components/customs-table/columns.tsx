@@ -45,10 +45,7 @@ export function createCustomsColumns({
                 <span className="inline-block" style={{ width: 20 }} />
               )}
             </div>
-            <span
-              className="truncate font-mono"
-              title={`#${row.original.id}`}
-            >
+            <span className="truncate font-mono" title={value}>
               {renderedCode}
             </span>
           </div>

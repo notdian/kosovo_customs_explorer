@@ -41,7 +41,7 @@ export function VirtualizedTreeTable({
   const table = useReactTable<CustomsTreeNode>({
     data,
     columns,
-    getRowId: (row) => String(row.id),
+    getRowId: (row) => String(row.code),
     getSubRows: (row) => row.subRows ?? [],
     getCoreRowModel: getCoreRowModel(),
     getExpandedRowModel: getExpandedRowModel(),

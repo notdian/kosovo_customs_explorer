@@ -5,8 +5,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const KEEP_FIELDS = new Set([
-  "id",
-  "parentId",
   "code",
   "description",
   "percentage",
@@ -18,11 +16,8 @@ const KEEP_FIELDS = new Set([
   "validFrom",
   "uomCode",
 ]);
-
-const NULLABLE_FIELDS = new Set(["parentId", "uomCode"]);
+const NULLABLE_FIELDS = new Set(["uomCode"]);
 const NUMBER_FIELDS = new Set([
-  "id",
-  "parentId",
   "percentage",
   "cefta",
   "msa",
@@ -36,15 +31,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const DATA_PATH = path.join(ROOT, "data", "tarrifs.json");
 
-function normalizeValue(key, value, index) {
+function normalizeValue(key, value) {
   if (NUMBER_FIELDS.has(key)) {
     const num = Number(value);
     if (Number.isFinite(num)) return num;
-    if (key === "id") {
-      throw new TypeError(
-        `Record at index ${index} is missing a valid numeric id`,
-      );
-    }
     return 0;
   }
   if (STRING_FIELDS.has(key)) {
@@ -63,17 +53,14 @@ function trimRecord(record, index, optionalDropCounts) {
   const trimmed = {};
   for (const field of KEEP_FIELDS) {
     const value = record[field];
-    if (
-      (value === undefined || value === null) &&
-      NULLABLE_FIELDS.has(field)
-    ) {
+    if ((value === undefined || value === null) && NULLABLE_FIELDS.has(field)) {
       optionalDropCounts[field] = (optionalDropCounts[field] ?? 0) + 1;
       continue;
     }
-    trimmed[field] = normalizeValue(field, value, index);
+    trimmed[field] = normalizeValue(field, value);
   }
-  if (trimmed.id === undefined) {
-    throw new TypeError(`Record at index ${index} is missing required id`);
+  if (!trimmed.code || typeof trimmed.code !== "string") {
+    throw new TypeError(`Record at index ${index} is missing required string code`);
   }
   return trimmed;
 }
@@ -103,10 +90,20 @@ async function main() {
   }
 
   const optionalDropCounts = {};
-  const trimmed = data.map((record, index) =>
-    trimRecord(record, index, optionalDropCounts),
+  const trimmed = data.map((record, index) => {
+    return trimRecord(record, index, optionalDropCounts);
+  });
+
+  // Keep only the latest instance (highest index) of each code
+  const lastIndexByCode = new Map();
+  for (const [index, record] of trimmed.entries()) {
+    lastIndexByCode.set(record.code, index);
+  }
+  const deduped = trimmed.filter(
+    (record, index) => lastIndexByCode.get(record.code) === index,
   );
-  const payload = JSON.stringify(trimmed);
+  const duplicateCount = trimmed.length - deduped.length;
+  const payload = JSON.stringify(deduped);
   await writeFile(DATA_PATH, payload, "utf8");
   const afterStat = await stat(DATA_PATH);
 
@@ -127,6 +124,9 @@ async function main() {
       .map(([field, count]) => `${field}=${count}`)
       .join(", ");
     console.log(`Omitted null fields: ${optionalSummary}`);
+  }
+  if (duplicateCount > 0) {
+    console.log(`Deduplicated ${duplicateCount} records by keeping latest codes.`);
   }
   console.log(`Size: ${beforeReadable} -> ${afterReadable}`);
 }
