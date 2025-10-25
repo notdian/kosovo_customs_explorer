@@ -52,19 +52,6 @@ const MINISEARCH_HIGHLIGHT_TEMPLATE =
   '<span class="bg-amber-200 rounded px-0.5">$&</span>';
 const INDEX_CHUNK_SIZE = 2_000;
 
-/** sort helper */
-function sortChildren(a: CustomsTreeNode, b: CustomsTreeNode): number {
-  const ac = (a.code ?? "").toString();
-  const bc = (b.code ?? "").toString();
-  if (ac < bc) return -1;
-  if (ac > bc) return 1;
-  const ad = (a.description ?? "").toString();
-  const bd = (b.description ?? "").toString();
-  if (ad < bd) return -1;
-  if (ad > bd) return 1;
-  return 0;
-}
-
 function compareRecords(a: CustomsRecord, b: CustomsRecord): number {
   const ac = (a.code ?? "").toString();
   const bc = (b.code ?? "").toString();
@@ -114,7 +101,6 @@ type MiniSearchHit = { id: string; highlight?: string | null };
 
 export class CustomsDataService {
   private static _descriptionIndex: MiniSearch | null = null;
-  private static _rootRecordsCache: CustomsRecord[] | null = null;
 
   static async initializeData({
     force = false,
@@ -190,8 +176,6 @@ export class CustomsDataService {
           });
         }
       });
-
-      this._rootRecordsCache = null;
 
       // Rebuild index after data load
       await this.ensureDescriptionIndex();
@@ -273,9 +257,9 @@ export class CustomsDataService {
     }
 
     for (const node of byCode.values()) {
-      if (node.subRows.length > 1) node.subRows.sort(sortChildren);
+      if (node.subRows.length > 1) node.subRows.sort(compareRecords);
     }
-    roots.sort(sortChildren);
+    roots.sort(compareRecords);
     return roots;
   }
 
@@ -308,17 +292,6 @@ export class CustomsDataService {
       curr = parent;
     }
     return path;
-  }
-
-  private static async getRootRecords(db: CustomsDatabase): Promise<CustomsRecord[]> {
-    if (!this._rootRecordsCache) {
-      const all = await db.customs.orderBy("code").toArray();
-      const codeSet = new Set(all.map((record) => record.code));
-      this._rootRecordsCache = all.filter(
-        (record) => !findParentCode(record.code, codeSet),
-      );
-    }
-    return this._rootRecordsCache.map((record) => ({ ...record }));
   }
 
   private static async getDirectChildrenRecords(
@@ -358,19 +331,13 @@ export class CustomsDataService {
     const ancestorRecords = await Promise.all(pathToLca.map((code) => db.customs.get(code)));
     ancestorRecords.forEach((record) => addRecord(record));
 
-    const parentsForSiblings = new Set<string | null>();
+    const parentsForSiblings = new Set<string>();
     for (const code of pathToLca) {
       const parent = await this.findExistingParent(db, code);
-      parentsForSiblings.add(parent ?? null);
+      if (parent) parentsForSiblings.add(parent);
     }
 
     for (const parentCode of parentsForSiblings) {
-      if (parentCode === null) {
-        const roots = await this.getRootRecords(db);
-        roots.forEach((record) => addRecord(record));
-        continue;
-      }
-
       const directChildren = await this.getDirectChildrenRecords(db, parentCode);
       directChildren.forEach((record) => addRecord(record));
     }
@@ -378,27 +345,31 @@ export class CustomsDataService {
     return Array.from(allRecords.values()).sort(compareRecords);
   }
 
-  private static async getPathsForCodes(
+  private static async getSubtreesForHits(
     codes: string[],
     hits: MiniSearchHit[],
   ): Promise<CustomsFlatRow[]> {
-    const db = getDb();
-    const pathSets = await Promise.all(codes.map((c) => this.getPath(db, c)));
-    const uniquePathCodes = new Set<string>();
-    pathSets.forEach((ps) => ps.forEach((c) => uniquePathCodes.add(c)));
-
-    const recs = await Promise.all(
-      Array.from(uniquePathCodes).map((c) => db.customs.get(c)),
-    ).then((as) => as.filter((r): r is CustomsRecord => !!r));
-
-    // Add highlights
     const highlightMap = new Map(hits.map((h) => [h.id, h.highlight || null]));
-    recs.forEach((r) => {
-      const hl = highlightMap.get(r.code);
-      if (hl) r.highlightedDescription = hl;
-    });
+    const allRecords = new Map<string, CustomsRecord>();
 
-    return recs.sort((a, b) => a.code.localeCompare(b.code));
+    const subtrees = await Promise.all(
+      codes.map((code) => this.getSubtreeWithAncestors(code)),
+    );
+
+    for (const subtree of subtrees) {
+      for (const record of subtree) {
+        if (!allRecords.has(record.code)) {
+          allRecords.set(record.code, { ...record });
+        }
+      }
+    }
+
+    for (const [code, record] of allRecords) {
+      const hl = highlightMap.get(code);
+      if (hl) record.highlightedDescription = hl;
+    }
+
+    return Array.from(allRecords.values()).sort(compareRecords);
   }
 
   private static async searchByDescriptionHits(
@@ -412,7 +383,6 @@ export class CustomsDataService {
 
     return results.map((result) => {
       let highlight: string | null = null;
-      console.log(result)
       if (result.terms) {
         let description = result.description || "";
         result.terms.forEach((term) => {
@@ -431,33 +401,31 @@ export class CustomsDataService {
     descQuery = "",
   ): Promise<CustomsFlatRow[]> {
     if (typeof window === "undefined") return [];
-
+    const codePrefix = (idPrefix ?? "").trim();
+    const descQueryTrimmed = (descQuery ?? "").trim();
+    const hasCodeQuery = codePrefix.length > 0;
+    const hasDescQuery = descQueryTrimmed.length > 0;
     try {
-      const codePrefix = (idPrefix ?? "").trim();
-      const descQueryTrimmed = (descQuery ?? "").trim();
-      const hasCodeQuery = codePrefix.length > 0;
-      const hasDescQuery = descQueryTrimmed.length > 0;
-
       if (!hasCodeQuery && !hasDescQuery) {
         return await this.getAllData();
       }
 
-      let hits: MiniSearchHit[] = [];
-      if (hasDescQuery) {
-        hits = await this.searchByDescriptionHits(descQueryTrimmed);
-      }
-
-      const relevantHits = hasDescQuery
-        ? hits.filter((h) => !hasCodeQuery || h.id.startsWith(codePrefix))
-        : [];
-
-      if (relevantHits.length === 0 && hasCodeQuery) {
+      if (!hasDescQuery) {
         return await this.getSubtreeWithAncestors(codePrefix);
       }
 
-      if (relevantHits.length === 0) return []; // No results
+      const hits = await this.searchByDescriptionHits(descQueryTrimmed);
+      const relevantHits = hasCodeQuery
+        ? hits.filter((h) => h.id.startsWith(codePrefix))
+        : hits;
 
-      return await this.getPathsForCodes(relevantHits.map((h) => h.id), relevantHits);
+      if (relevantHits.length === 0) {
+        return hasCodeQuery
+          ? await this.getSubtreeWithAncestors(codePrefix)
+          : [];
+      }
+
+      return await this.getSubtreesForHits(relevantHits.map((h) => h.id), relevantHits);
     } catch (error) {
       console.error("Search failed:", { idPrefix, descQuery, error });
       return [];

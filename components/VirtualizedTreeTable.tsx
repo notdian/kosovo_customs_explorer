@@ -10,6 +10,7 @@ import {
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
+import { Skeleton } from "@/components/ui/skeleton";
 import type { CustomsTreeNode } from "@/lib/database";
 
 type VirtualizedTreeTableProps = {
@@ -22,6 +23,17 @@ type VirtualizedTreeTableProps = {
 const GRID_TEMPLATE =
   "minmax(160px,1fr) minmax(600px,1.6fr) 50px 50px 50px 50px 50px 50px 120px";
 const MIN_ROW_HEIGHT = 56;
+const SKELETON_ROW_COUNT = 8;
+const SKELETON_SECONDARY_WIDTHS = [
+  "h-4 w-64",
+  "h-4 w-10",
+  "h-4 w-12",
+  "h-4 w-12",
+  "h-4 w-16",
+  "h-4 w-14",
+  "h-4 w-12",
+  "h-4 w-20",
+];
 
 function computeMinTableWidth(template: string): number {
   const staticColumnsWidth = Array.from(template.matchAll(/(\d+)px/g))
@@ -54,9 +66,10 @@ export function VirtualizedTreeTable({
 
   const parentRef = useRef<HTMLDivElement | null>(null);
   const rows = table.getRowModel().rows;
+  const rowCount = loading ? SKELETON_ROW_COUNT : rows.length;
 
   const rowVirtualizer = useVirtualizer({
-    count: loading ? 1 : rows.length,
+    count: rowCount,
     getScrollElement: () => parentRef.current,
     estimateSize: () => MIN_ROW_HEIGHT,
     overscan: 12,
@@ -99,44 +112,55 @@ export function VirtualizedTreeTable({
           }}
         >
           <div style={{ height: totalSize, position: "relative" }}>
-            {loading ? (
-              <div
-                className="absolute inset-x-0 top-0 grid gap-4 border-b px-4 py-3 text-sm animate-pulse"
-                style={{
-                  gridTemplateColumns: GRID_TEMPLATE,
-                  height: MIN_ROW_HEIGHT,
-                }}
-              >
-                <div className="col-span-full h-4 w-48 animate-pulse rounded bg-muted" />
-              </div>
-            ) : (
-              virtualItems.map((virtualItem) => {
-                const row = rows[virtualItem.index];
-                if (!row) return null;
+            {virtualItems.map((virtualItem) => {
+              if (loading) {
                 return (
                   <div
-                    key={row.id}
-                    data-index={virtualItem.index}
+                    key={`skeleton-${virtualItem.index}`}
                     ref={rowVirtualizer.measureElement}
-                    className="absolute inset-x-0 grid gap-4 border-b px-4 py-3 text-sm transition-colors hover:bg-muted/40"
+                    className="absolute inset-x-0 grid items-center gap-4 border-b px-4 py-3 text-sm"
                     style={{
                       gridTemplateColumns: GRID_TEMPLATE,
                       transform: `translateY(${virtualItem.start}px)`,
                       height: virtualItem.size,
                     }}
                   >
-                    {row.getVisibleCells().map((cell) => (
-                      <div key={cell.id} className="min-w-0">
-                        {flexRender(cell.column.columnDef.cell, {
-                          ...cell.getContext(),
-                          row,
-                        })}
-                      </div>
+                    <div className="flex items-center gap-3">
+                      <Skeleton className="h-4 w-4 rounded-full" />
+                      <Skeleton className="h-4 w-24" />
+                    </div>
+                    {SKELETON_SECONDARY_WIDTHS.map((className, index) => (
+                      <Skeleton key={index} className={className} />
                     ))}
                   </div>
                 );
-              })
-            )}
+              }
+
+              const row = rows[virtualItem.index];
+              if (!row) return null;
+              return (
+                <div
+                  key={row.id}
+                  data-index={virtualItem.index}
+                  ref={rowVirtualizer.measureElement}
+                  className="absolute inset-x-0 grid gap-4 border-b px-4 py-3 text-sm transition-colors hover:bg-muted/40"
+                  style={{
+                    gridTemplateColumns: GRID_TEMPLATE,
+                    transform: `translateY(${virtualItem.start}px)`,
+                    height: virtualItem.size,
+                  }}
+                >
+                  {row.getVisibleCells().map((cell) => (
+                    <div key={cell.id} className="min-w-0">
+                      {flexRender(cell.column.columnDef.cell, {
+                        ...cell.getContext(),
+                        row,
+                      })}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>

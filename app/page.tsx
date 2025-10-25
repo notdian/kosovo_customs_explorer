@@ -1,5 +1,5 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardHeader } from "@/components/ui/card";
 import { CustomsExplorer } from "@/components/CustomsExplorer";
 import { AlertTriangle, Github } from "lucide-react";
 
