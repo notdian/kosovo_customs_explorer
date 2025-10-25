@@ -2,8 +2,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 import { Button } from "@/components/ui/button";
 import { ExpandIcon } from "@/components/ExpandIcon";
-import { calcKosovoImportTaxes } from "@/lib/taxes";
-import { formatDate, formatMoney, formatPercent } from "@/lib/formatters";
+import { formatDate, formatPercent } from "@/lib/formatters";
 import { highlightPrefix } from "@/lib/highlighting";
 import type { CustomsTreeNode } from "@/lib/database";
 
@@ -112,26 +111,9 @@ export function createCustomsColumns({
     {
       header: "E vlefshme nga",
       accessorKey: "validFrom",
-      cell: (info) => <span className="text-xs">{formatDate(info.getValue())}</span>,
+      cell: (info) => (
+        <span className="text-xs">{formatDate(info.getValue())}</span>
+      ),
     },
-    // {
-    //   header: "Detyrime",
-    //   id: "duties",
-    //   accessorFn: (row) => row.id,
-    //   cell: (info) => {
-    //     const row = info.row.original;
-    //     const base = row.percentage;
-    //     const tvsh = row.tvsh;
-    //     const excise = row.excise;
-    //     const metaPrice = info.table.options.meta?.price ?? 0;
-    //     const taxes = calcKosovoImportTaxes({
-    //       price: metaPrice,
-    //       customsRate: base,
-    //       vatRate: tvsh,
-    //       exciseRate: excise,
-    //     });
-    //     return <span className="font-medium">{formatMoney(taxes.totalTaxes)}</span>;
-    //   },
-    // },
   ];
 }

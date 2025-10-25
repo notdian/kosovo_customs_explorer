@@ -1,4 +1,4 @@
-name: Build & Deploy Vite React + Fetch Data (pnpm).git
+name: Build & Deploy Next.js Static (pnpm)
 
 on:
   push:
@@ -46,8 +46,11 @@ jobs:
           curl -fsSL "$DATA_SOURCE_URL" -o "data/tarrifs.json"
           jq -e . "data/tarrifs.json" > /dev/null
 
-      - name: Build Vite app
-        run: pnpm build
+      - name: Trim tariff dataset
+        run: pnpm run trim-tarrifs
+
+      - name: Build Next.js app
+        run: pnpm run build
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
@@ -55,7 +58,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: out
 
   deploy:
     needs: build

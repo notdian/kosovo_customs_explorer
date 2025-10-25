@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "preact/hooks";
-import type { JSX } from "preact";
+'use client';
+
+import { useEffect, useRef } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   flexRender,
@@ -16,7 +17,6 @@ type VirtualizedTreeTableProps = {
   data: CustomsTreeNode[];
   loading: boolean;
   autoExpandAll?: boolean;
-  price?: number;
 };
 
 const GRID_TEMPLATE =
@@ -37,8 +37,7 @@ export function VirtualizedTreeTable({
   data,
   loading,
   autoExpandAll = true,
-  price = 0,
-}: VirtualizedTreeTableProps): JSX.Element {
+}: VirtualizedTreeTableProps) {
   const table = useReactTable<CustomsTreeNode>({
     data,
     columns,
@@ -46,7 +45,6 @@ export function VirtualizedTreeTable({
     getSubRows: (row) => row.subRows ?? [],
     getCoreRowModel: getCoreRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
-    meta: { price },
   });
 
   useEffect(() => {
@@ -85,10 +83,10 @@ export function VirtualizedTreeTable({
                     ? null
                     : flexRender(
                       header.column.columnDef.header,
-                      header.getContext()
+                      header.getContext(),
                     )}
                 </div>
-              ))
+              )),
             )}
         </div>
         <div

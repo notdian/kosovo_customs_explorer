@@ -1,6 +1,6 @@
-import type { ComponentChild } from "preact";
+import type { ReactNode } from "react";
 
-export function highlightPrefix(text: string, prefix: string): ComponentChild {
+export function highlightPrefix(text: string, prefix: string): ReactNode {
   if (!text) return "—";
   if (!prefix) return text;
   if (!text.startsWith(prefix)) return text;

@@ -32,8 +32,28 @@ type SearchOptions = {
   itemLimit?: number;
 };
 
+export type InitializationPhase =
+  | "load-data"
+  | "indexing"
+  | "done"
+  | "cached"
+  | "error";
+
+export type InitializationProgress = {
+  phase: InitializationPhase;
+  loaded: number;
+  total: number;
+  message: string;
+};
+
+type InitializeOptions = {
+  force?: boolean;
+  onProgress?: (progress: InitializationProgress) => void;
+};
+
 const FLEXSEARCH_HIGHLIGHT_TEMPLATE =
   '<span class="bg-amber-200 rounded px-0.5">$1</span>';
+const INDEX_CHUNK_SIZE = 2_000;
 
 function sortChildren(a: CustomsTreeNode, b: CustomsTreeNode): number {
   const ac = (a.code ?? "").toString();
@@ -55,7 +75,7 @@ function buildCachedData(rows: CustomsRecord[]): {
 } {
   const cloned: CustomsFlatRow[] = rows.map((row) => ({ ...row }));
   const byId = new Map<number, CustomsFlatRow>(
-    cloned.map((row) => [row.id, row])
+    cloned.map((row) => [row.id, row]),
   );
   const rootCache = new Map<number, number | null>();
   const byRootId = new Map<number, CustomsFlatRow[]>();
@@ -102,7 +122,71 @@ export class CustomsDatabase extends Dexie {
   }
 }
 
-export const db = new CustomsDatabase();
+let dbInstance: CustomsDatabase | null = null;
+
+function getDb(): CustomsDatabase {
+  if (typeof window === "undefined") {
+    throw new Error("Customs database is only available in the browser.");
+  }
+  if (!dbInstance) {
+    dbInstance = new CustomsDatabase();
+  }
+  return dbInstance;
+}
+
+type FlexDocHit = { id: number; highlight?: string | null };
+
+function extractFlexDocHits(raw: unknown): FlexDocHit[] {
+  // Tolerant extractor across flexsearch versions/shapes
+  const hits: FlexDocHit[] = [];
+  const visit = (node: unknown) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (typeof node === "number") {
+      hits.push({ id: node, highlight: null });
+      return;
+    }
+    if (typeof node === "object") {
+      const record = node as Record<string, unknown>;
+      const rawId = record.id;
+      if (typeof rawId === "number") {
+        let highlight: string | null = null;
+        if (typeof record.highlight === "string") {
+          highlight = record.highlight;
+        } else {
+          const doc = record.doc;
+          if (
+            doc &&
+            typeof doc === "object" &&
+            typeof (doc as { highlight?: unknown }).highlight === "string"
+          ) {
+            highlight = (doc as { highlight: string }).highlight;
+          }
+        }
+        hits.push({ id: rawId, highlight });
+      }
+      const result = record.result;
+      if (Array.isArray(result)) {
+        result.forEach(visit);
+      }
+      const subHits = record.hits;
+      if (Array.isArray(subHits)) {
+        subHits.forEach(visit);
+      }
+    }
+  };
+  visit(raw);
+
+  const dedup = new Map<number, string | null>();
+  for (const h of hits) {
+    if (!dedup.has(h.id)) dedup.set(h.id, h.highlight ?? null);
+    else if (!dedup.get(h.id) && h.highlight) dedup.set(h.id, h.highlight);
+  }
+  return Array.from(dedup, ([id, highlight]) => ({ id, highlight }));
+}
 
 export class CustomsDataService {
   private static _allDataCache: CustomsFlatRow[] | null = null;
@@ -121,15 +205,46 @@ export class CustomsDataService {
 
   static async initializeData({
     force = false,
-  }: { force?: boolean } = {}): Promise<boolean> {
+    onProgress,
+  }: InitializeOptions = {}): Promise<boolean> {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    const formatNumber = (value: number) => value.toLocaleString(undefined);
+
     try {
+      const db = getDb();
       const existing = await db.customs.count();
       if (!force && existing > 0) {
         this.resetCaches();
+        onProgress?.({
+          phase: "cached",
+          loaded: existing,
+          total: existing,
+          message: `U gjetën ${formatNumber(existing)} rreshta ekzistues.`,
+        });
         return false;
       }
+
+      onProgress?.({
+        phase: "load-data",
+        loaded: 0,
+        total: 0,
+        message: "Duke ngarkuar të dhënat e tarifave...",
+      });
+
       const data = (await import("@/data/tarrifs.json"))
         .default as CustomsRecord[];
+      const total = data.length;
+
+      onProgress?.({
+        phase: "indexing",
+        loaded: 0,
+        total,
+        message: `Duke indeksuar 0 / ${formatNumber(total)} rreshta...`,
+      });
+
       const normalized: CustomsRecord[] = data.map((d) => ({
         ...d,
         code: d.code == null ? "" : String(d.code),
@@ -139,22 +254,52 @@ export class CustomsDataService {
         fileUrl: d.fileUrl ?? null,
         validFrom: d.validFrom ?? "",
       }));
+
       await db.transaction("rw", db.customs, async () => {
         await db.customs.clear();
-        await db.customs.bulkAdd(normalized);
+        for (let start = 0; start < normalized.length; start += INDEX_CHUNK_SIZE) {
+          const chunk = normalized.slice(start, start + INDEX_CHUNK_SIZE);
+          await db.customs.bulkAdd(chunk);
+          const loaded = Math.min(start + chunk.length, normalized.length);
+          onProgress?.({
+            phase: "indexing",
+            loaded,
+            total,
+            message: `Duke indeksuar ${formatNumber(loaded)} / ${formatNumber(
+              total,
+            )} rreshta...`,
+          });
+        }
       });
+
       this.resetCaches();
+
+      onProgress?.({
+        phase: "done",
+        loaded: total,
+        total,
+        message: "Indeksimi i të dhënave u përfundua.",
+      });
+
       return true;
     } catch (error) {
       console.error("Error initializing database:", error);
+      onProgress?.({
+        phase: "error",
+        loaded: 0,
+        total: 0,
+        message: "Indeksimi dështoi. Kontrolloni konsolën për detaje.",
+      });
       return false;
     }
   }
 
   private static async ensureAllDataCache(): Promise<CustomsFlatRow[]> {
     if (this._allDataCache) return this._allDataCache;
+    if (typeof window === "undefined") return [];
 
     try {
+      const db = getDb();
       const rows = await db.customs.toArray();
       const { cache, byId, byRootId, rootOrder } = buildCachedData(rows);
       this._allDataCache = cache;
@@ -239,15 +384,19 @@ export class CustomsDataService {
     return roots;
   }
 
-  private static readonly CODE_SEARCH_MULTIPLIER = 4; // Fetch more codes to ensure enough roots after intersection
-  private static readonly DESC_SEARCH_MULTIPLIER = 6; // Over-fetch descriptions for roots
-  private static readonly MAX_ALL_DATA_LIMIT = 10000; // Cap "all data" fallback to prevent overload
+  private static readonly CODE_SEARCH_MULTIPLIER = 4;
+  private static readonly DESC_SEARCH_MULTIPLIER = 6;
+  private static readonly MAX_ALL_DATA_LIMIT = 10000;
 
   static async searchByFields(
     idPrefix = "",
     descQuery = "",
-    { parentLimit = 200, itemLimit = 4000 }: SearchOptions = {}
+    { parentLimit = 200, itemLimit = 4000 }: SearchOptions = {},
   ): Promise<CustomsFlatRow[]> {
+    if (typeof window === "undefined") {
+      return [];
+    }
+
     try {
       const codePrefix = (idPrefix ?? "").trim();
       const descQueryTrimmed = (descQuery ?? "").trim();
@@ -255,7 +404,6 @@ export class CustomsDataService {
       const hasDescQuery = descQueryTrimmed.length > 0;
 
       if (!hasCodeQuery && !hasDescQuery) {
-        // Edge case: no queries -> return limited all data
         const allData = await this.getAllData();
         return allData.slice(0, Math.min(itemLimit, this.MAX_ALL_DATA_LIMIT));
       }
@@ -267,28 +415,27 @@ export class CustomsDataService {
       }
 
       const codeIds = hasCodeQuery
-        ? await this.searchByCodeRoots(codePrefix, parentLimit)
+        ? await this.searchByCodeIds(codePrefix, parentLimit)
         : null;
-      const descSearchResults = hasDescQuery
-        ? await this.searchByDescriptionRoots(descQueryTrimmed, itemLimit)
+
+      const descHits = hasDescQuery
+        ? await this.searchByDescriptionHits(descQueryTrimmed, itemLimit)
         : null;
+
       const highlightById = new Map<number, string>();
 
       let descIds: Set<number> | null = null;
 
-      if (descSearchResults) {
+      if (descHits) {
         descIds = new Set();
-        descSearchResults.forEach((r) => {
+        descHits.forEach((r) => {
           descIds!.add(r.id as number);
           if (r.highlight) highlightById.set(r.id as number, r.highlight);
         });
       }
 
-      const finalIds = this.intersectAndLimit(codeIds, descIds);
-
-      if (!finalIds.size) {
-        return [];
-      }
+      const finalIds = this.intersectIds(codeIds, descIds);
+      if (!finalIds.size) return [];
 
       return this.buildSearchResults(finalIds, highlightById, itemLimit);
     } catch (error) {
@@ -297,65 +444,58 @@ export class CustomsDataService {
     }
   }
 
-  private static async searchByCodeRoots(
+  private static async searchByCodeIds(
     codePrefix: string,
-    parentLimit: number
+    parentLimit: number,
   ): Promise<Set<number>> {
-    const rootIds = await db.customs
+    const db = getDb();
+    // Grab primary keys of rows whose code starts with the prefix
+    const ids = await db.customs
       .where("code")
       .startsWith(codePrefix)
       .limit(parentLimit * this.CODE_SEARCH_MULTIPLIER)
       .primaryKeys();
 
-    return new Set(rootIds);
+    return new Set(ids);
   }
 
-  private static async searchByDescriptionRoots(
+  private static async searchByDescriptionHits(
     query: string,
-    itemLimit: number
-  ) {
+    itemLimit: number,
+  ): Promise<FlexDocHit[]> {
     const index = await this.ensureDescriptionIndex();
     const dataLength = (await this.ensureAllDataCache()).length;
     const searchLimit =
-      Math.min(itemLimit * this.DESC_SEARCH_MULTIPLIER, dataLength) ||
-      undefined;
+      Math.min(itemLimit * this.DESC_SEARCH_MULTIPLIER, dataLength) || undefined;
 
-    return index.search(query, {
+    // Ask for enriched results to maximize compatibility with highlight plugins
+    const raw = index.search(query, {
       limit: searchLimit,
-
       highlight: {
         template: FLEXSEARCH_HIGHLIGHT_TEMPLATE,
         ellipsis: "…",
       },
-      pluck: "description", // Fetch only description to optimize
+      enrich: true,
+      pluck: "description",
     });
+
+    return extractFlexDocHits(raw);
   }
 
-  private static intersectAndLimit(
-    codeRootIds: Set<number> | null,
-    descRootIds: Set<number> | null
+  private static intersectIds(
+    a: Set<number> | null,
+    b: Set<number> | null,
   ): Set<number> {
-    let finalIds: Set<number>;
-
-    if (codeRootIds && descRootIds) {
-      // Intersect: only roots matching both
-      finalIds = new Set([...codeRootIds].filter((id) => descRootIds.has(id)));
-    } else if (codeRootIds) {
-      finalIds = codeRootIds;
-    } else if (descRootIds) {
-      finalIds = descRootIds;
-    } else {
-      return new Set();
-    }
-
-    if (finalIds.size === 0) return new Set();
-    return finalIds;
+    if (a && b) return new Set([...a].filter((id) => b.has(id)));
+    if (a) return a;
+    if (b) return b;
+    return new Set();
   }
 
   private static buildSearchResults(
     ids: Set<number>,
     highlightById: Map<number, string>,
-    itemLimit: number
+    itemLimit: number,
   ): CustomsFlatRow[] {
     const byId = this._allDataById;
     const byRootId = this._allDataByRootId;
