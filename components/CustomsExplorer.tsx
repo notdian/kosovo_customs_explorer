@@ -41,7 +41,11 @@ export function CustomsExplorer() {
   const mountedRef = useRef(true);
 
   const debouncedId = useDebouncedValue(idQuery.trim(), 250);
-  const debouncedDesc = useDebouncedValue(descQuery.trim(), 250);
+  const normalizedDescQuery = descQuery.trim();
+  const debouncedDesc = useDebouncedValue(
+    normalizedDescQuery.length >= 3 ? normalizedDescQuery : "",
+    250,
+  );
   const codePrefix = debouncedId;
 
   useEffect(() => {
@@ -105,10 +109,7 @@ export function CustomsExplorer() {
         const nextList =
           !idPref && !desc
             ? await CustomsDataService.getAllData()
-            : await CustomsDataService.searchByFields(idPref, desc, {
-              parentLimit: 200,
-              itemLimit: 4000,
-            });
+            : await CustomsDataService.searchByFields(idPref, desc);
 
         if (cancelled || !mountedRef.current) return;
         startTransition(() => {
@@ -156,7 +157,7 @@ export function CustomsExplorer() {
   return (
     <section className="space-y-6">
       <Card>
-        <CardHeader className="pb-4">
+        <CardHeader>
           <CardTitle className="text-lg font-semibold sm:text-xl">
             Filtro të dhënat
           </CardTitle>
@@ -192,7 +193,7 @@ export function CustomsExplorer() {
               autoComplete="off"
             />
             <p className="text-xs text-muted-foreground">
-              Shkruani një pjesë të përshkrimit (p.sh. &quot;vajra&quot; ose &quot;tub&quot;) për të parë nën-kodet përkatëse.
+              Shkruani të paktën 3 shkronja nga përshkrimi (p.sh. &quot;vajra&quot; ose &quot;tub&quot;) për të parë nën-kodet përkatëse.
             </p>
           </div>
         </CardContent>

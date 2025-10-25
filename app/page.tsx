@@ -21,26 +21,24 @@ export default function Home() {
             </p>
           </header>
 
-          <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+          <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] items-start">
             <Card className="rounded-2xl border border-border/70 bg-card/70 px-6">
-              <CardHeader className="space-y-2 px-0">
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Përditësuar / Last updated
-                </p>
-                <CardTitle className="mt-2 block text-lg font-semibold text-foreground">
+              <CardHeader className=" px-0">
+                <div className="flex justify-between items-start">
+                  <p className="text-md font-bold uppercase tracking-wide">
+                    Përditësuar / Last updated
+                  </p>
                   <time title={buildTime} dateTime={buildTime}>
                     {buildTime}
                   </time>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-0 pb-0">
-                <p className="mt-3 text-xs text-muted-foreground">
+                </div>
+                <p className="text-xs text-muted-foreground">
                   Të dhënat rifreskohen periodikisht nga burimet publike të Doganës së Kosovës.
                 </p>
-              </CardContent>
+              </CardHeader>
             </Card>
 
-            <Alert className="h-full border-amber-200 bg-amber-50 text-amber-900">
+            <Alert className="border-amber-200 bg-amber-50 text-amber-900">
               <AlertTitle className="flex items-center gap-2 text-sm font-semibold">
                 <AlertTriangle aria-hidden className="h-4 w-4" />
                 Informacion i rëndësishëm
@@ -71,6 +69,6 @@ export default function Home() {
           </a>
         </footer>
       </main>
-    </div>
+    </div >
   );
 }

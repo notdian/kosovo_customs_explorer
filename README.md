@@ -6,7 +6,7 @@ Interactive explorer for the tariff schedule published by the Customs Administra
 
 ## Key features
 
-- Fast client-side search across ~10k tariff records using FlexSearch
+- Fast client-side search across ~10k tariff records using MiniSearch
 - Hierarchical tree table with virtualized rendering for smooth scrolling
 - Offline-first caching powered by Dexie (IndexedDB)
 - Static export (`next build`) suitable for GitHub Pages or any static host
