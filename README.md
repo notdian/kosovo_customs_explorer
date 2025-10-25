@@ -1,5 +1,7 @@
 # Kosovo Customs Explorer
 
+**Project archived**: On October 25, 2025 this codebase was migrated into the [Kosova Tools monorepo](https://github.com/notdian/kosovotools.org) under `packages/customs-data`. This repository now serves as a historical snapshot; report issues and
+  send PRs to the monorepo instead.
 Interactive explorer for the tariff schedule published by the Customs Administration of the Republic of Kosovo. Search and filter tariff codes in Albanian, review duty rates, and understand how individual items map to the broader customs hierarchy.
 
 > **Disclaimer**: This project is community-maintained and is not an official product of Dogana e Kosovës. Always verify information against the latest official publications.
